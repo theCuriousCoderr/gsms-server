@@ -265,7 +265,7 @@ app.post("/", async (req, res) => {
     }; // modify data received from the ESP8266 by adding a date (timeStamp)
     console.log(reading);
 
-    let response = await Readings.create(reading).lean(); // save modified data to database
+    let response = await Readings.create(reading) // save modified data to database
 
     for (let client of clients) {
       if (client.readyState === WebSocket.OPEN) {
@@ -315,7 +315,7 @@ app.post("/", async (req, res) => {
   }
 });
 
-server.listen(PORT, (error) => {
+server.listen(PORT, "0.0.0.0", (error) => {
   if (!error) {
     console.log("✅ App is listening on port " + PORT);
   } else {
