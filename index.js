@@ -96,11 +96,9 @@ await connectMongoDB();
 
 async function sendSMS(text) {
   try {
-    let settings = await Settings.findById(
-      "68bc0fbe497970b72f1f6598"
-    ).lean();
+    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
     let { phone } = settings;
-    phone = `234${phone.slice(1)}`
+    phone = `234${phone.slice(1)}`;
     const res = await fetch(`${TERMII_BASE_URL}/api/sms/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -127,11 +125,9 @@ async function sendSMS(text) {
 
 async function sendMail(text) {
   try {
-    let settings = await Settings.findById(
-      "68bc0fbe497970b72f1f6598"
-    ).lean();
+    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
     let { email } = settings;
-   
+
     let transporter = nodemailer.createTransport({
       service: "gmail", // Or use SMTP settings
       auth: {
@@ -159,12 +155,16 @@ function dontSendMail() {
 }
 
 app.get("/", async (req, res) => {
-  let settings = await Settings.findById("68bc0fbe497970b72f1f6598")
+  try {
+    let settings = await Settings.findById("68bc0fbe497970b72f1f6598");
 
-  return res.status(200).send({
-    msg: "AI-Powered Grain Storage Monitoring System",
-    data: settings,
-  });
+    return res.status(200).send({
+      msg: "AI-Powered Grain Storage Monitoring System",
+      data: settings,
+    });
+  } catch (error) {
+    console.error(error);
+  }
 });
 
 app.post("/fetch-graph-data", async (req, res) => {
@@ -208,7 +208,10 @@ app.post("/update-notifications-settings", async (req, res) => {
       { sendEmail, sendSMS },
       { new: true }
     ).lean();
-    if (updatedSettings.sendEmail === sendEmail && updatedSettings.sendSMS === sendSMS) {
+    if (
+      updatedSettings.sendEmail === sendEmail &&
+      updatedSettings.sendSMS === sendSMS
+    ) {
       return res
         .status(200)
         .send({ msg: "Settings Updated Successfully", data: updatedSettings });
@@ -239,9 +242,7 @@ app.post("/update-user-info", async (req, res) => {
 
 app.get("/get-settings", async (req, res) => {
   try {
-    let settings = await Settings.findById(
-      "68bc0fbe497970b72f1f6598"
-    ).lean();
+    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
 
     return res
       .status(200)
@@ -253,9 +254,7 @@ app.get("/get-settings", async (req, res) => {
 
 app.post("/", async (req, res) => {
   try {
-    let settings = await Settings.findById(
-      "68bc0fbe497970b72f1f6598"
-    ).lean();
+    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
     const { temperature, humidity } = req.body;
     const { sendEmail: _sendMail, sendSMS: _sendSMS, email, phone } = settings;
     let date = Date.now(); // get current date (timeStamp)
