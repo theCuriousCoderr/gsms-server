@@ -29,6 +29,8 @@ const TERMII_BASE_URL = "https://v3.api.termii.com";
 // Store connected clients
 const clients = new Set();
 
+let grainSettings = null;
+
 wss.on("connection", (ws) => {
   console.log("Frontend connected");
   clients.add(ws);
@@ -49,6 +51,7 @@ const readingsSchema = new mongoose.Schema({
   timeStamp: { type: Number, required: true },
   temperature: { type: Number, required: true },
   humidity: { type: Number, required: true },
+  grainType: { type: String, default: "Maize" },
 });
 
 const settingsSchema = new mongoose.Schema({
@@ -56,12 +59,16 @@ const settingsSchema = new mongoose.Schema({
   sendSMS: Boolean,
   email: String,
   phone: String,
+  grainType: String,
+  maxTemp: String,
+  maxHumid: String,
 });
 
 const Readings = mongoose.model("Readings", readingsSchema);
 const Settings = mongoose.model("Settings", settingsSchema);
 
 const MONGODB_URI = process.env.MONGODB_URI;
+
 
 let isConnected = false; // Track the connection state
 let backoff = 1; // Track the connection retry delay
@@ -96,7 +103,7 @@ await connectMongoDB();
 
 async function sendSMS(text) {
   try {
-    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
+    let settings = await Settings.findById(settings_ID).lean();
     let { phone } = settings;
     phone = `234${phone.slice(1)}`;
     const res = await fetch(`${TERMII_BASE_URL}/api/sms/send`, {
@@ -125,7 +132,7 @@ async function sendSMS(text) {
 
 async function sendMail(text) {
   try {
-    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
+    let settings = await Settings.findById(settings_ID).lean();
     let { email } = settings;
 
     let transporter = nodemailer.createTransport({
@@ -154,13 +161,44 @@ function dontSendMail() {
   console.log("Storage Conditions are good and optimal");
 }
 
+function calculateEMC(Rh, T, grainType) {
+  const constants = {
+    Rice: [0.000285, 1.8],
+    Wheat: [0.000324, 1.6],
+    Maize: [0.000543, 1.8],
+    Millet: [0.000445, 1.7],
+    Sorghum: [0.000398, 1.65],
+  };
+  const [C, N] = constants[grainType];
+  const numerator = -1 * Math.log(1 - Rh / 100);
+  const denominator = C * T;
+  const emc = Math.pow(numerator / denominator, 1 / N);
+  return emc;
+}
+
+const settings_ID = "68cdc9bbf924451bb0db3ca7";
+
 app.get("/", async (req, res) => {
   try {
-    let settings = await Settings.findById("68bc0fbe497970b72f1f6598");
+    let settings;
+    if (!grainSettings) {
+      grainSettings = await Settings.findById(settings_ID).lean();
+    }
+    settings = grainSettings;
+    const readings = await Readings.find().lean();
+    //   let settings = await Settings.create({
+    //     sendEmail: true,
+    // sendSMS: false,
+    // email: "segunsunday619@gmail.com",
+    // phone: "07037887923",
+    // grainType: "Maize",
+    // maxTemp: "30",
+    // maxHumid: "70"
+    //   })
 
     return res.status(200).send({
       msg: "AI-Powered Grain Storage Monitoring System",
-      data: settings,
+      data: { settings, readings },
     });
   } catch (error) {
     console.error(error);
@@ -170,41 +208,58 @@ app.get("/", async (req, res) => {
 app.post("/fetch-graph-data", async (req, res) => {
   try {
     console.log("Fetching Graph Data");
+
+    let settings;
+    if (!grainSettings) {
+      grainSettings = await Settings.findById(settings_ID).lean();
+    }
+    settings = grainSettings;
+
     let { from, to } = req.body; // received date range from the website dashboard
+    //  console.log({from, to})
     const readings = await Readings.find({
       timeStamp: {
         $gte: from,
         $lte: to,
       },
+      grainType: settings.grainType,
     }).lean(); // query and filter database records based on the date range
 
     let timeZone = []; // store the arranged records timeStamps
     let temps = []; // store the arranged records temperature data
     let humids = []; // store the arranged records humidity data
+    let EMC = [];
+
+    // console.log({readings})
 
     for (let reading of readings) {
-      const timeStamp = new Date(reading.timeStamp); // con
+      const timeStamp = new Date(reading.timeStamp);
+      const _emc = calculateEMC(
+        reading.humidity,
+        reading.temperature,
+        settings.grainType
+      );
       let hours = timeStamp.getHours();
       let minutes = timeStamp.getMinutes();
       let seconds = timeStamp.getSeconds();
       timeZone.push(`${hours}h:${minutes}m:${seconds}s`);
       temps.push(reading.temperature);
       humids.push(reading.humidity);
+      EMC.push(_emc);
     }
 
     // send the timezone, humidity, temperature data to the website dashboard
-    return res.status(200).send({ timeZone, humids, temps });
+    return res.status(200).send({ timeZone, humids, temps, EMC });
   } catch (error) {
     console.error(error);
   }
 });
 
 app.post("/update-notifications-settings", async (req, res) => {
-  console.log(req.body);
   let { sendEmail, sendSMS } = req.body;
   try {
     let updatedSettings = await Settings.findByIdAndUpdate(
-      "68bc0fbe497970b72f1f6598",
+      settings_ID,
       { sendEmail, sendSMS },
       { new: true }
     ).lean();
@@ -222,18 +277,22 @@ app.post("/update-notifications-settings", async (req, res) => {
 });
 
 app.post("/update-user-info", async (req, res) => {
-  console.log(req.body);
-  let { email, phone } = req.body;
+  let payload = { ...req.body }; //represents a single key-pair object
   try {
     let updatedSettings = await Settings.findByIdAndUpdate(
-      "68bc0fbe497970b72f1f6598",
-      { email, phone },
+      settings_ID,
+      payload,
       { new: true }
     ).lean();
-    if (updatedSettings.email === email && updatedSettings.phone === phone) {
+    let extractedPayloadKey = Object.keys(payload)[0];
+    if (updatedSettings[extractedPayloadKey] === payload[extractedPayloadKey]) {
       return res
         .status(200)
         .send({ msg: "Settings Updated Successfully", data: updatedSettings });
+    } else {
+      return res
+        .status(500)
+        .send({ msg: "Failed to Update", data: updatedSettings });
     }
   } catch (error) {
     console.error(error);
@@ -242,7 +301,11 @@ app.post("/update-user-info", async (req, res) => {
 
 app.get("/get-settings", async (req, res) => {
   try {
-    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
+    let settings;
+    if (!grainSettings) {
+      grainSettings = await Settings.findById(settings_ID).lean();
+    }
+    settings = grainSettings;
 
     return res
       .status(200)
@@ -252,11 +315,39 @@ app.get("/get-settings", async (req, res) => {
   }
 });
 
-app.post("/", async (req, res) => {
+app.get("/thresholds", async (req, res) => {
   try {
-    let settings = await Settings.findById("68bc0fbe497970b72f1f6598").lean();
+    let settings;
+    if (!grainSettings) {
+      grainSettings = await Settings.findById(settings_ID).lean();
+    }
+    settings = grainSettings;
+
+    return res.status(200).send({
+      maxTemp: Number(settings.maxTemp),
+      maxHumid: Number(settings.maxHumid),
+    });
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+app.post("/", async (req, res) => {
+  console.log("ESP8266 Sent Some Data");
+  try {
+    let settings;
+    if (!grainSettings) {
+      grainSettings = await Settings.findById(settings_ID).lean();
+    }
+    settings = grainSettings;
+
     const { temperature, humidity } = req.body;
-    const { sendEmail: _sendMail, sendSMS: _sendSMS, email, phone } = settings;
+    const {
+      sendEmail: _sendMail,
+      sendSMS: _sendSMS,
+      maxTemp,
+      maxHumid,
+    } = settings;
     let date = Date.now(); // get current date (timeStamp)
     const reading = {
       timeStamp: date,
@@ -265,7 +356,7 @@ app.post("/", async (req, res) => {
     }; // modify data received from the ESP8266 by adding a date (timeStamp)
     console.log(reading);
 
-    let response = await Readings.create(reading) // save modified data to database
+    let response = await Readings.create(reading); // save modified data to database
 
     for (let client of clients) {
       if (client.readyState === WebSocket.OPEN) {
@@ -278,33 +369,33 @@ app.post("/", async (req, res) => {
       }
     }
 
-    if (temperature > TEMPERATURE_THRESHOLD && humidity > HUMIDITY_THRESHOLD) {
+    if (temperature > maxTemp && humidity > maxHumid) {
       _sendMail &&
         sendMail(
-          `High temperature at ${temperature}°C. Please check on the grains`
+          `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
+        ); // send high temperature and humidity alert mail
+      _sendSMS &&
+        sendSMS(
+          `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
+        ); // send high temperature and humidity alert SMS
+    } else if (temperature > maxTemp) {
+      _sendMail &&
+        sendMail(
+          `Critical temperature at ${temperature}°C. Please check on the grains`
         ); // send high temperature alert mail
       _sendSMS &&
         sendSMS(
-          `High temperature at ${temperature}°C. Please check on the grains`
+          `Critical temperature at ${temperature}°C. Please check on the grains`
         ); // send high temperature alert SMS
-      _sendMail &&
-        sendMail(`High humidity at ${humidity}%. Please check on the grains`); // send high humidity alert mail
-      _sendSMS &&
-        sendSMS(`High humidity at ${humidity}%. Please check on the grains`); // send high humidity alert SMS
-    } else if (temperature > TEMPERATURE_THRESHOLD) {
+    } else if (humidity > maxHumid) {
       _sendMail &&
         sendMail(
-          `High temperature at ${temperature}°C. Please check on the grains`
-        ); // send high temperature alert mail
+          `Critical humidity at ${humidity}%. Please check on the grains`
+        ); // send high humidity alert mail
       _sendSMS &&
         sendSMS(
-          `High temperature at ${temperature}°C. Please check on the grains`
-        ); // send high temperature alert SMS
-    } else if (humidity > HUMIDITY_THRESHOLD) {
-      _sendMail &&
-        sendMail(`High humidity at ${humidity}%. Please check on the grains`); // send high humidity alert mail
-      _sendSMS &&
-        sendSMS(`High humidity at ${humidity}%. Please check on the grains`); // send high humidity alert SMS
+          `Critical humidity at ${humidity}%. Please check on the grains`
+        ); // send high humidity alert SMS
     } else {
       dontSendMail();
     }
