@@ -16,8 +16,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-const TEMPERATURE_THRESHOLD = 30;
-const HUMIDITY_THRESHOLD = 70;
+// const TEMPERATURE_THRESHOLD = 30;
+// const HUMIDITY_THRESHOLD = 70;
 // const client = new OpenAI({
 //   apiKey: process.env.OPENAI_API_KEY, // put in .env
 // });
@@ -62,13 +62,14 @@ const settingsSchema = new mongoose.Schema({
   grainType: String,
   maxTemp: String,
   maxHumid: String,
+  turnOnFan: Boolean,
+  activateSetUp: Boolean,
 });
 
 const Readings = mongoose.model("Readings", readingsSchema);
 const Settings = mongoose.model("Settings", settingsSchema);
 
 const MONGODB_URI = process.env.MONGODB_URI;
-
 
 let isConnected = false; // Track the connection state
 let backoff = 1; // Track the connection retry delay
@@ -163,11 +164,10 @@ function dontSendMail() {
 
 function calculateEMC(Rh, T, grainType) {
   const constants = {
-    Rice: [0.000285, 1.8],
-    Wheat: [0.000324, 1.6],
-    Maize: [0.000543, 1.8],
-    Millet: [0.000445, 1.7],
-    Sorghum: [0.000398, 1.65],
+    Paddy: [0.0000122, 1.35],
+    Maize: [0.0000198, 1.9],
+    Wheat: [0.00000106, 3.03],
+    Sorghum: [0.0000061, 2.31],
   };
   const [C, N] = constants[grainType];
   const numerator = -1 * Math.log(1 - Rh / 100);
@@ -176,7 +176,7 @@ function calculateEMC(Rh, T, grainType) {
   return emc;
 }
 
-const settings_ID = "68cdc9bbf924451bb0db3ca7";
+const settings_ID = "68f294ce4a2cdfe419f9dd85";
 
 app.get("/", async (req, res) => {
   try {
@@ -185,21 +185,26 @@ app.get("/", async (req, res) => {
       grainSettings = await Settings.findById(settings_ID).lean();
     }
     settings = grainSettings;
-    const readings = await Readings.find().lean();
-    //   let settings = await Settings.create({
-    //     sendEmail: true,
-    // sendSMS: false,
-    // email: "segunsunday619@gmail.com",
-    // phone: "07037887923",
-    // grainType: "Maize",
-    // maxTemp: "30",
-    // maxHumid: "70"
-    //   })
+    const readingsLength = await Readings.find().lean();
+    // // console.log({readingsLength})
+    // let settings = await Settings.create({
+    //   sendEmail: false,
+    //   sendSMS: false,
+    //   email: "segunsunday619@gmail.com",
+    //   phone: "07037887923",
+    //   grainType: "Maize",
+    //   maxTemp: "30",
+    //   maxHumid: "70",
+    //   turnOnFan: false,
+    //   activateSetUp: true,
+    // });
+    // let readingsLength = [1];
 
-    return res.status(200).send({
-      msg: "AI-Powered Grain Storage Monitoring System",
-      data: { settings, readings },
-    });
+    // return res.status(200).send({
+    //   msg: "AI-Powered Grain Storage Monitoring System is online",
+    //   data: { settings, readingsLength: readingsLength.length },
+    // });
+    return res.status(200).send("AI-Powered Grain Storage Monitoring System is Online");
   } catch (error) {
     console.error(error);
   }
@@ -229,8 +234,7 @@ app.post("/fetch-graph-data", async (req, res) => {
     let temps = []; // store the arranged records temperature data
     let humids = []; // store the arranged records humidity data
     let EMC = [];
-
-    // console.log({readings})
+    let DI = [];
 
     for (let reading of readings) {
       const timeStamp = new Date(reading.timeStamp);
@@ -239,6 +243,10 @@ app.post("/fetch-graph-data", async (req, res) => {
         reading.temperature,
         settings.grainType
       );
+      const Pas =
+        610.78 *
+        Math.exp((17.27 * reading.temperature) / (reading.temperature + 273));
+      const _di = (reading.humidity - 65) * Pas * 1e-4;
       let hours = timeStamp.getHours();
       let minutes = timeStamp.getMinutes();
       let seconds = timeStamp.getSeconds();
@@ -246,10 +254,11 @@ app.post("/fetch-graph-data", async (req, res) => {
       temps.push(reading.temperature);
       humids.push(reading.humidity);
       EMC.push(_emc);
+      DI.push(_di);
     }
 
     // send the timezone, humidity, temperature data to the website dashboard
-    return res.status(200).send({ timeZone, humids, temps, EMC });
+    return res.status(200).send({ timeZone, humids, temps, EMC, DI });
   } catch (error) {
     console.error(error);
   }
@@ -267,6 +276,7 @@ app.post("/update-notifications-settings", async (req, res) => {
       updatedSettings.sendEmail === sendEmail &&
       updatedSettings.sendSMS === sendSMS
     ) {
+      grainSettings = null
       return res
         .status(200)
         .send({ msg: "Settings Updated Successfully", data: updatedSettings });
@@ -286,6 +296,7 @@ app.post("/update-user-info", async (req, res) => {
     ).lean();
     let extractedPayloadKey = Object.keys(payload)[0];
     if (updatedSettings[extractedPayloadKey] === payload[extractedPayloadKey]) {
+      grainSettings = null;
       return res
         .status(200)
         .send({ msg: "Settings Updated Successfully", data: updatedSettings });
@@ -348,6 +359,7 @@ app.post("/", async (req, res) => {
       maxTemp,
       maxHumid,
     } = settings;
+    // console.log(maxTemp, maxHumid)
     let date = Date.now(); // get current date (timeStamp)
     const reading = {
       timeStamp: date,
@@ -369,7 +381,24 @@ app.post("/", async (req, res) => {
       }
     }
 
-    if (temperature > maxTemp && humidity > maxHumid) {
+    try {
+      let turnOnFan = false;
+      if (temperature >= Number(maxTemp) || humidity >= Number(maxHumid)) {
+        turnOnFan = true;
+      } else if (temperature < Number(maxTemp) && humidity < Number(maxHumid)) {
+        turnOnFan = false;
+      }
+      let updatedSettings = await Settings.findByIdAndUpdate(
+        settings_ID,
+        { turnOnFan },
+        { new: true }
+      ).lean();
+      grainSettings = null
+    } catch (error) {
+      console.error(error);
+    }
+
+    if (temperature >= maxTemp && humidity >= maxHumid) {
       _sendMail &&
         sendMail(
           `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
@@ -378,7 +407,7 @@ app.post("/", async (req, res) => {
         sendSMS(
           `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
         ); // send high temperature and humidity alert SMS
-    } else if (temperature > maxTemp) {
+    } else if (temperature >= maxTemp) {
       _sendMail &&
         sendMail(
           `Critical temperature at ${temperature}°C. Please check on the grains`
@@ -387,7 +416,7 @@ app.post("/", async (req, res) => {
         sendSMS(
           `Critical temperature at ${temperature}°C. Please check on the grains`
         ); // send high temperature alert SMS
-    } else if (humidity > maxHumid) {
+    } else if (humidity >= maxHumid) {
       _sendMail &&
         sendMail(
           `Critical humidity at ${humidity}%. Please check on the grains`
