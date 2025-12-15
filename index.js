@@ -4,27 +4,19 @@ import cors from "cors";
 import http from "http";
 import cookieParser from "cookie-parser";
 import mongoose from "mongoose";
-import OpenAI from "openai";
-import twilio from "twilio";
-import axios from "axios";
 import WebSocket, { WebSocketServer } from "ws";
-import nodemailer from "nodemailer";
-// import { SettingsContextImpl } from "twilio/lib/rest/voice/v1/dialingPermissions/settings";
+import { Resend } from "resend";
 mongoose.set("strictQuery", false);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-// const TEMPERATURE_THRESHOLD = 30;
-// const HUMIDITY_THRESHOLD = 70;
-// const client = new OpenAI({
-//   apiKey: process.env.OPENAI_API_KEY, // put in .env
-// });
 
 const TERMII_API_KEY =
   "TLdsBNLBkWlhPmYJrIrowxKKYrbiMtkdGjTVkaaiPZpCjNeLuEpiYjzwTzgvmf";
 const TERMII_BASE_URL = "https://v3.api.termii.com";
+const resend = new Resend("re_7SY4Cu85_FzAyVUkv8dLTNTTkntQ8wwdp");
 
 // Store connected clients
 const clients = new Set();
@@ -134,27 +126,23 @@ async function sendSMS(text) {
 async function sendMail(text) {
   try {
     let settings = await Settings.findById(settings_ID).lean();
-    let { email } = settings;
+    let { email } = settings
 
-    let transporter = nodemailer.createTransport({
-      service: "gmail", // Or use SMTP settings
-      auth: {
-        user: "elijahdimeji549@gmail.com",
-        pass: "bzmj myct dizy ydsd", // Use app password if using Gmail
-      },
-    });
-    await transporter.sendMail({
-      from: '"Grain Storage Monitoring System" <your_email@gmail.com>',
+    const data = await resend.emails.send({
+      from: "Grain Storage Monitoring System <onboarding@resend.dev>",
       to: email,
       subject: "Grain Storage Alert",
-      text,
+      html: `<p>${text}</p>`,
     });
-    console.log("Email Sent Successfully");
-    return { success: true, message: "Email sent successfully" };
+
+    if (data.data.id) {
+      return { success: true, message: "Email sent successfully" };
+    } else {
+      return { success: false, message: "Email failed to send" };
+    }
   } catch (error) {
     console.error(error);
     console.error("Email Failed to Send");
-    return { success: false, message: "Email failed to send" };
   }
 }
 
@@ -204,7 +192,9 @@ app.get("/", async (req, res) => {
     //   msg: "AI-Powered Grain Storage Monitoring System is online",
     //   data: { settings, readingsLength: readingsLength.length },
     // });
-    return res.status(200).send("AI-Powered Grain Storage Monitoring System is Online");
+    return res
+      .status(200)
+      .send("AI-Powered Grain Storage Monitoring System is Online");
   } catch (error) {
     console.error(error);
   }
@@ -276,7 +266,7 @@ app.post("/update-notifications-settings", async (req, res) => {
       updatedSettings.sendEmail === sendEmail &&
       updatedSettings.sendSMS === sendSMS
     ) {
-      grainSettings = null
+      grainSettings = null;
       return res
         .status(200)
         .send({ msg: "Settings Updated Successfully", data: updatedSettings });
@@ -352,13 +342,14 @@ app.post("/", async (req, res) => {
     }
     settings = grainSettings;
 
-    const { temperature, humidity } = req.body;
+    // const { temperature, humidity } = req.body;
+    const { temperature, humidity } = { temperature: 50, humidity: 90 };
     const {
       sendEmail: _sendMail,
       sendSMS: _sendSMS,
       maxTemp,
       maxHumid,
-    } = settings;
+    } = { ...settings, sendEmail: true };
     // console.log(maxTemp, maxHumid)
     let date = Date.now(); // get current date (timeStamp)
     const reading = {
@@ -393,21 +384,21 @@ app.post("/", async (req, res) => {
         { turnOnFan },
         { new: true }
       ).lean();
-      grainSettings = null
+      grainSettings = null;
     } catch (error) {
       console.error(error);
     }
 
-    if (temperature >= maxTemp && humidity >= maxHumid) {
+    if (temperature >= Number(maxTemp) && humidity >= Number(maxHumid)) {
       _sendMail &&
         sendMail(
-          `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
+          `Critical temperature at ${temperature}°C. Please check on the grains.<br>Critical humidity at ${humidity}%. Please check on the grains`
         ); // send high temperature and humidity alert mail
       _sendSMS &&
         sendSMS(
-          `Critical temperature at ${temperature}°C. Please check on the grains.\nCritical humidity at ${humidity}%. Please check on the grains`
+          `Critical temperature at ${temperature}°C. Please check on the grains.<br>Critical humidity at ${humidity}%. Please check on the grains`
         ); // send high temperature and humidity alert SMS
-    } else if (temperature >= maxTemp) {
+    } else if (temperature >= Number(maxTemp)) {
       _sendMail &&
         sendMail(
           `Critical temperature at ${temperature}°C. Please check on the grains`
@@ -416,7 +407,7 @@ app.post("/", async (req, res) => {
         sendSMS(
           `Critical temperature at ${temperature}°C. Please check on the grains`
         ); // send high temperature alert SMS
-    } else if (humidity >= maxHumid) {
+    } else if (humidity >= Number(maxHumid)) {
       _sendMail &&
         sendMail(
           `Critical humidity at ${humidity}%. Please check on the grains`
