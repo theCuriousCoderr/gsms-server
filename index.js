@@ -135,7 +135,7 @@ async function sendMail(text) {
       html: `<p>${text}</p>`,
     });
 
-    if (data.data.id) {
+    if (Boolean(data.data.id)) {
       return { success: true, message: "Email sent successfully" };
     } else {
       return { success: false, message: "Email failed to send" };
