@@ -342,8 +342,8 @@ app.post("/", async (req, res) => {
     }
     settings = grainSettings;
 
-    // const { temperature, humidity } = req.body;
-    const { temperature, humidity } = { temperature: 50, humidity: 90 };
+    const { temperature, humidity } = req.body;
+    // const { temperature, humidity } = { temperature: 50, humidity: 90 };
     const {
       sendEmail: _sendMail,
       sendSMS: _sendSMS,
